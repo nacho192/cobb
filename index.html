@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <title>Cobb Pro - Dirección Inteligente</title>
+  <title>Medición Ángulo de Cobb - Pro</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { font-family: sans-serif; background: #f0f0f0; margin: 0; padding: 20px; text-align: center; }
@@ -21,7 +21,7 @@
 <body>
 
   <h2>Medición de Ángulo de Cobb</h2>
-  <p id="instruction">Carga una imagen para comenzar</p>
+  <p id="instruction">Carga una radiografía para comenzar</p>
 
   <div class="container">
     <div class="controls">
@@ -129,64 +129,61 @@
       if (points.length >= 4) {
         drawLine(points[2], points[3], "#28a745");
         
-        // 1. Cálculo de Cobb
+        const mid1 = { x: (points[0].x + points[1].x)/2, y: (points[0].y + points[1].y)/2 };
+        const mid2 = { x: (points[2].x + points[3].x)/2, y: (points[2].y + points[3].y)/2 };
+        const center = { x: (mid1.x + mid2.x)/2, y: (mid1.y + mid2.y)/2 };
+
+        const drawPerpToTarget = (p1, p2, m, target, col) => {
+            const dx = p2.x - p1.x;
+            const dy = p2.y - p1.y;
+            const angleLine = Math.atan2(dy, dx);
+            
+            // Perpendicular candidata 1 (+90°)
+            const p1x = Math.cos(angleLine + Math.PI/2);
+            const p1y = Math.sin(angleLine + Math.PI/2);
+            
+            // Verificamos cuál dirección nos acerca al objetivo (target)
+            const dist1 = Math.hypot((m.x + p1x) - target.x, (m.y + p1y) - target.y);
+            const dist2 = Math.hypot((m.x - p1x) - target.x, (m.y - p1y) - target.y);
+            
+            const dir = dist1 < dist2 ? 1 : -1;
+            const finalX = Math.cos(angleLine + (Math.PI/2 * dir)) * (500/scale);
+            const finalY = Math.sin(angleLine + (Math.PI/2 * dir)) * (500/scale);
+
+            ctx.beginPath();
+            ctx.strokeStyle = col;
+            ctx.setLineDash([5/scale, 5/scale]);
+            ctx.lineWidth = 2/scale;
+            ctx.moveTo(m.x, m.y);
+            ctx.lineTo(m.x + finalX, m.y + finalY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        };
+
+        drawPerpToTarget(points[0], points[1], mid1, center, "#007bff");
+        drawPerpToTarget(points[2], points[3], mid2, center, "#28a745");
+
+        // Cálculo de Cobb
         const v1 = { x: points[1].x - points[0].x, y: points[1].y - points[0].y };
         const v2 = { x: points[3].x - points[2].x, y: points[3].y - points[2].y };
         let cobb = Math.acos(Math.min(1, Math.max(-1, (v1.x*v2.x + v1.y*v2.y) / (Math.hypot(v1.x, v1.y) * Math.hypot(v2.x, v2.y))))) * 180 / Math.PI;
         if (cobb > 90) cobb = 180 - cobb;
         output.innerHTML = `Ángulo de Cobb: ${cobb.toFixed(1)}°`;
 
-        // 2. Perpendiculares inteligentes
-        const mid1 = { x: (points[0].x + points[1].x)/2, y: (points[0].y + points[1].y)/2 };
-        const mid2 = { x: (points[2].x + points[3].x)/2, y: (points[2].y + points[3].y)/2 };
-        
-        const drawSmartPerp = (pInicio, pFin, m, col) => {
-            const dx = pFin.x - pInicio.x;
-            const dy = pFin.y - pInicio.y;
-            const anguloBase = Math.atan2(dy, dx);
-            
-            // Si el punto medio está arriba de la mitad de la imagen, la perpendicular debe ir hacia abajo
-            // Usamos el signo del producto cruzado o rotación fija para asegurar dirección central
-            let direccion = (m.y < img.height / 2) ? 1 : -1;
-            
-            // Ajuste especial: si dx es negativo (se marcó de derecha a izquierda), invertimos la dirección
-            if (dx < 0) direccion *= -1;
-
-            const px = Math.cos(anguloBase + Math.PI/2 * direccion) * (400/scale);
-            const py = Math.sin(anguloBase + Math.PI/2 * direccion) * (400/scale);
-
-            ctx.beginPath();
-            ctx.strokeStyle = col;
-            ctx.setLineDash([5/scale, 5/scale]);
-            ctx.moveTo(m.x, m.y);
-            ctx.lineTo(m.x + px, m.y + py);
-            ctx.stroke();
-            ctx.setLineDash([]);
-        };
-
-        drawSmartPerp(points[0], points[1], mid1, "#007bff");
-        drawSmartPerp(points[2], points[3], mid2, "#28a745");
-
-        // 3. Dibujar Arco y Texto en el centro
+        // Arco y Texto
         ctx.save();
-        const centerX = (mid1.x + mid2.x) / 2;
-        const centerY = (mid1.y + mid2.y) / 2;
-        
-        // Arco visual (amarillo)
         ctx.beginPath();
         ctx.strokeStyle = "yellow";
         ctx.lineWidth = 2 / scale;
-        ctx.arc(centerX, centerY, 35/scale, 0, Math.PI*2); // Representación simbólica del ángulo
+        ctx.arc(center.x, center.y, 35/scale, 0, Math.PI*2);
         ctx.stroke();
 
         ctx.setTransform(1, 0, 0, 1, 0, 0);
-        const screenX = isFlipped ? canvas.width - (centerX * scale) : centerX * scale;
-        const screenY = centerY * scale;
+        const screenX = isFlipped ? canvas.width - (center.x * scale) : center.x * scale;
+        const screenY = center.y * scale;
         ctx.fillStyle = "yellow";
-        ctx.shadowColor = "black";
-        ctx.shadowBlur = 5;
-        ctx.font = "bold 24px Arial";
-        ctx.textAlign = "center";
+        ctx.shadowColor = "black"; ctx.shadowBlur = 5;
+        ctx.font = "bold 24px Arial"; ctx.textAlign = "center";
         ctx.fillText(`${cobb.toFixed(1)}°`, screenX, screenY - 10);
         ctx.restore();
       }
@@ -196,12 +193,9 @@
         ctx.fillStyle = i < 2 ? "#007bff" : "#28a745";
         ctx.arc(p.x, p.y, s, 0, Math.PI * 2);
         ctx.fill();
-        ctx.strokeStyle = "white";
-        ctx.lineWidth = 1/scale;
-        ctx.stroke();
+        ctx.strokeStyle = "white"; ctx.lineWidth = 1/scale; ctx.stroke();
       });
     }
-
     sizeSlider.oninput = draw;
   </script>
 </body>
