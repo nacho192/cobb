@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Cobb App Móvil</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <meta name="theme-color" content="#000000">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/hammer.js/2.0.8/hammer.min.js"></script>
+  <style>
+    body { font-family: -apple-system, sans-serif; background: #000; margin: 0; color: white; overflow: hidden; touch-action: none; }
+    
+    /* Capas superiores e inferiores */
+    .ui-overlay { position: absolute; width: 100%; z-index: 10; pointer-events: none; }
+    .top-bar { top: 0; background: rgba(20, 20, 20, 0.8); padding: 15px; text-align: center; }
+    .bottom-bar { bottom: 0; background: rgba(20, 20, 20, 0.9); padding: 20px; display: flex; justify-content: center; gap: 15px; pointer-events: auto; }
+
+    .viewer { width: 100vw; height: 100vh; background: #000; position: relative; overflow: hidden; }
+    canvas { display: block; }
+
+    #output { font-size: 1.6em; color: #ffcc00; font-weight: bold; text-shadow: 0 2px 4px rgba(0,0,0,0.5); }
+    #instruction { font-size: 0.8em; color: #00aaff; margin-top: 5px; }
+
+    button, .upload-btn { 
+      padding: 12px 20px; border-radius: 10px; border: none; background: #333; color: white; 
+      font-weight: bold; font-size: 16px; pointer-events: auto;
+    }
+    .upload-btn { background: #007bff; }
+    input[type="file"] { display: none; }
+  </style>
+</head>
+<body>
+
+  <div class="ui-overlay top-bar">
+    <div id="output">Ángulo: --°</div>
+    <div id="instruction">Carga una radiografía para medir</div>
+  </div>
+
+  <div class="viewer" id="viewport">
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <div class="ui-overlay bottom-bar">
+    <label class="upload-btn">📁 Abrir<input type="file" id="imageInput" accept="image/*"></label>
+    <button id="undoBtn">↩️</button>
+    <button id="resetBtn">🗑️</button>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const viewport = document.getElementById("viewport");
+    const imageInput = document.getElementById("imageInput");
+    const output = document.getElementById("output");
+    const instruction = document.getElementById("instruction");
+
+    // Configuración de Lupa
+    const LUPA_RADIO = 90;
+    const LUPA_OFFSET = 140; // Distancia hacia arriba para que el dedo no tape
+    const LUPA_ZOOM = 2.5;
+
+    let img = new Image();
+    let points = [];
+    let draggingIdx = -1;
+    let view = { x: 0, y: 0, scale: 1 };
+    let startView = { x: 0, y: 0, scale: 1 };
+
+    // --- 1. CARGA DE IMAGEN ---
+    imageInput.onchange = e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        img = new Image();
+        img.onload = () => {
+          const ratio = viewport.clientWidth / img.width;
+          view.scale = ratio;
+          view.x = 0;
+          view.y = (viewport.clientHeight - img.height * ratio) / 2;
+          points = [];
+          updateUI();
+          draw();
+        };
+        img.src = ev.target.result;
+      };
+      reader.readAsDataURL(file);
+    };
+
+    // --- 2. GESTOS MULTITÁCTILES (Hammer.js) ---
+    const mc = new Hammer.Manager(viewport);
+    mc.add(new Hammer.Pinch());
+    mc.add(new Hammer.Pan({ threshold: 0, pointers: 0 }));
+
+    mc.on("pinchstart panstart", () => {
+      startView = { ...view };
+    });
+
+    mc.on("pinchmove panmove", (e) => {
+      if (e.pointers.length >= 2) {
+        // Zoom y desplazamiento con dos dedos
+        view.scale = Math.max(0.1, Math.min(10, startView.scale * e.scale));
+        view.x = startView.x + e.deltaX;
+        view.y = startView.y + e.deltaY;
+        draw();
+      } else if (e.pointers.length === 1 && draggingIdx !== -1) {
+        // Mover punto con un dedo (Lupa activa)
+        const pos = getLogicPos(e.pointers[0]);
+        points[draggingIdx] = pos;
+        draw();
+        drawMagnifier(pos, e.pointers[0]);
+      }
+    });
+
+    // --- 3. TOQUE ÚNICO PARA MARCAR ---
+    viewport.addEventListener("touchstart", e => {
+      if (e.touches.length !== 1 || !img.src) return;
+      const pos = getLogicPos(e.touches[0]);
+      const hitRadius = 35 / view.scale; // Radio generoso para mobile
+      
+      draggingIdx = points.findIndex(p => Math.hypot(p.x - pos.x, p.y - pos.y) < hitRadius);
+      
+      if (draggingIdx === -1 && points.length < 4) {
+        points.push(pos);
+        draggingIdx = points.length - 1;
+        updateUI();
+      }
+      draw();
+      if (draggingIdx !== -1) drawMagnifier(points[draggingIdx], e.touches[0]);
+    });
+
+    viewport.addEventListener("touchend", () => {
+      draggingIdx = -1;
+      calculateCobb();
+      draw();
+    });
+
+    function getLogicPos(touch) {
+      const rect = viewport.getBoundingClientRect();
+      return {
+        x: (touch.clientX - rect.left - view.x) / view.scale,
+        y: (touch.clientY - rect.top - view.y) / view.scale
+      };
+    }
+
+    // --- 4. DIBUJO ---
+    function draw() {
+      if (!img.src) return;
+      canvas.width = viewport.clientWidth;
+      canvas.height = viewport.clientHeight;
+
+      ctx.save();
+      ctx.translate(view.x, view.y);
+      ctx.scale(view.scale, view.scale);
+      ctx.drawImage(img, 0, 0);
+
+      // Dibujar líneas
+      if (points.length >= 2) drawLine(points[0], points[1], "#00aaff");
+      if (points.length >= 4) {
+        drawLine(points[2], points[3], "#00ff44");
+        drawPerpendiculars();
+      }
+
+      // Dibujar puntos
+      points.forEach((p, i) => {
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 8 / view.scale, 0, Math.PI * 2);
+        ctx.fillStyle = i < 2 ? "#00aaff" : "#00ff44";
+        ctx.fill();
+        ctx.strokeStyle = "white"; ctx.lineWidth = 2 / view.scale; ctx.stroke();
+      });
+      ctx.restore();
+    }
+
+    function drawLine(p1, p2, color) {
+      ctx.beginPath();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3 / view.scale;
+      ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y);
+      ctx.stroke();
+    }
+
+    function drawPerpendiculars() {
+      const mid1 = { x: (points[0].x+points[1].x)/2, y: (points[0].y+points[1].y)/2 };
+      const mid2 = { x: (points[2].x+points[3].x)/2, y: (points[2].y+points[3].y)/2 };
+      const center = { x: (mid1.x+mid2.x)/2, y: (mid1.y+mid2.y)/2 };
+
+      const drawP = (p1, p2, m, col) => {
+        const ang = Math.atan2(p2.y - p1.y, p2.x - p1.x);
+        const d1 = Math.hypot((m.x+Math.cos(ang+Math.PI/2))-center.x, (m.y+Math.sin(ang+Math.PI/2))-center.y);
+        const d2 = Math.hypot((m.x-Math.cos(ang+Math.PI/2))-center.x, (m.y-Math.sin(ang+Math.PI/2))-center.y);
+        const dir = d1 < d2 ? 1 : -1;
+        ctx.beginPath();
+        ctx.strokeStyle = col; ctx.setLineDash([5/view.scale]);
+        ctx.moveTo(m.x, m.y);
+        ctx.lineTo(m.x + Math.cos(ang+Math.PI/2*dir)*300/view.scale, m.y + Math.sin(ang+Math.PI/2*dir)*300/view.scale);
+        ctx.stroke(); ctx.setLineDash([]);
+      };
+      drawP(points[0], points[1], mid1, "#00aaff");
+      drawP(points[2], points[3], mid2, "#00ff44");
+    }
+
+    // --- 5. LUPA MÓVIL (Con Offset) ---
+    function drawMagnifier(p, touch) {
+      const rect = viewport.getBoundingClientRect();
+      const px = touch.clientX - rect.left;
+      const py = touch.clientY - rect.top;
+      const ly = py - LUPA_OFFSET;
+
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0); // Lupa en coordenadas de pantalla
+      ctx.beginPath();
+      ctx.arc(px, ly, LUPA_RADIO, 0, Math.PI * 2);
+      ctx.strokeStyle = "white"; ctx.lineWidth = 3; ctx.stroke();
+      ctx.clip();
+      ctx.fillStyle = "black"; ctx.fill();
+
+      // Contenido de la lupa
+      ctx.translate(px, ly);
+      ctx.scale(LUPA_ZOOM * view.scale, LUPA_ZOOM * view.scale);
+      ctx.translate(-p.x, -p.y);
+      ctx.drawImage(img, 0, 0);
+
+      ctx.restore();
+      // Mira de la lupa
+      ctx.beginPath();
+      ctx.strokeStyle = "red"; ctx.lineWidth = 2;
+      ctx.moveTo(px - 15, ly); ctx.lineTo(px + 15, ly);
+      ctx.moveTo(px, ly - 15); ctx.lineTo(px, ly + 15);
+      ctx.stroke();
+    }
+
+    function calculateCobb() {
+      if (points.length < 4) return;
+      const v1 = { x: points[1].x - points[0].x, y: points[1].y - points[0].y };
+      const v2 = { x: points[3].x - points[2].x, y: points[3].y - points[2].y };
+      let ang = Math.acos(Math.min(1, Math.max(-1, (v1.x*v2.x+v1.y*v2.y)/(Math.hypot(v1.x,v1.y)*Math.hypot(v2.x,v2.y))))) * 180/Math.PI;
+      if (ang > 90) ang = 180 - ang;
+      output.innerHTML = `Ángulo: ${ang.toFixed(1)}°`;
+    }
+
+    function updateUI() {
+      const labels = ["Sup. Izq", "Sup. Der", "Inf. Izq", "Inf. Der"];
+      instruction.textContent = points.length < 4 ? `MARCAR: ${labels[points.length]}` : "✓ Ajuste arrastrando";
+    }
+
+    document.getElementById("undoBtn").onclick = () => { points.pop(); updateUI(); draw(); };
+    document.getElementById("resetBtn").onclick = () => { if(confirm("¿Reiniciar?")) location.reload(); };
+
+  </script>
+</body>
+</html>
